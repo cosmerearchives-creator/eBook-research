@@ -125,7 +125,7 @@ function ebookPattern(query,matchCase,whole){
  if(prefix||left)term=term.slice(1);if(suffix||right)term=term.slice(0,-1);
  if(!term.trim())throw Error('Enter letters beside * or - or inside quotation marks.');
  if(whole&&!(prefix||suffix||left||right)){left=true;right=true}
- const literal=term.replace(/[.*+?^\x24{}()|[\]\\]/g,'\\async function runConcordance(){');
+ const literal=term.replace(/[.*+?^\x24{}()|[\]\\]/g,c=>'\\'+c);
  const source=(left?'(?<![\\p{L}\\p{N}\\p{M}])':'')+(prefix?'(?<!\\S)\\S+':suffix?'(?<!\\S)':'')+literal+(suffix?'\\S+(?!\\S)':prefix?'(?!\\S)':'')+(right?'(?![\\p{L}\\p{N}\\p{M}])':'');
  return {quoted,pattern:new RegExp(source,matchCase?'gu':'giu')};
 }
