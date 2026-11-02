@@ -101,12 +101,12 @@ async function renderBook(){$('selectionAction')?.classList.remove('visible');le
  $('bookPanel').querySelector('.panel-scroll').onscroll=()=>{bookScroll=$('bookPanel').querySelector('.panel-scroll').scrollTop;scheduleSessionSave()};
  }
 // Concordance: local, case-insensitive whole-word search through imported EPUB text.
-let concordanceResults=[], concordanceTerm='';
+let concordanceResults=[], concordanceTerm='', concordanceScope='all';
 function concordanceView(){
  right('<h3>Source-aware research</h3><p class="muted">Search imported DRM-free EPUBs for a word or phrase. Each match includes its paragraph plus one paragraph before and after. Save selected matches as a topic research note with source references.</p><p class="small muted">Searches run entirely on this device. Chapter references follow EPUB reading order; printed page numbers are not supplied.</p>');
- $('main').innerHTML=`<div class="label">Research tools</div><h1>Ebook word finder</h1><p class="lead">Find terms across books, capture context and retain citations.</p><div class="line"><input class="field" style="flex:1;min-width:180px" id="findTerm" placeholder="Word or phrase" value="${escapeHtml(concordanceTerm)}"><button class="btn primary" id="runFind">Search EPUBs</button></div><div class="line" style="margin:12px 0"><label><input type="checkbox" id="wholeWords" checked> Whole words only</label><label><input type="checkbox" id="caseSensitive"> Match case</label></div><p id="findStatus" class="muted small">${state.books.length} imported book(s) available to search.</p><div id="findResults"></div>`;
+ $('main').innerHTML=`<div class="label">Research tools</div><h1>Ebook word finder</h1><p class="lead">Find terms across books, capture context and retain citations.</p><div class="line"><input class="field" style="flex:1;min-width:180px" id="findTerm" placeholder="Word or phrase" value="${escapeHtml(concordanceTerm)}"><button class="btn primary" id="runFind">Search EPUBs</button></div><div class="line" style="margin:12px 0"><label><input type="checkbox" id="wholeWords" checked> Whole words only (plain searches)</label><label><input type="checkbox" id="caseSensitive"> Match case</label></div><label>Within <select class="field" id="findScope"><option value="all">All books</option>${state.books.map(b=>'<option value="'+escapeHtml(b.id)+'">'+escapeHtml(b.title)+'</option>').join('')}</select></label><details class="small muted"><summary>Advanced search syntax</summary><p><code>metal*</code> begins with metal; <code>*metal</code> ends with metal; <code>-metal</code> starts at a word boundary; <code>metal-</code> ends at a boundary; <code>-metal-</code> matches a whole word. Quoted phrases ignore punctuation.</p></details><p id="findStatus" class="muted small">${state.books.length} imported book(s) available to search.</p><div id="findResults"></div>`;
  $('runFind').onclick=runConcordance;$('findTerm').onkeydown=e=>{if(e.key==='Enter')runConcordance()};
- if(concordanceResults.length)showConcordanceResults();
+ $('findScope').value=concordanceScope;if(concordanceResults.length)showConcordanceResults();
 }
 function chapterParagraphs(raw){
  let dom=new DOMParser().parseFromString(raw,'application/xhtml+xml');
@@ -117,13 +117,36 @@ function chapterParagraphs(raw){
  if(!paras.length)paras=(body.textContent||'').split(/\n\s*\n/).map(t=>t.replace(/\s+/g,' ').trim()).filter(Boolean);
  return paras;
 }
+
+function ebookPattern(query,matchCase,whole){
+ const quoted=query.length>=2&&query.startsWith('"')&&query.endsWith('"');
+ let term=quoted?query.slice(1,-1).replace(/\p{P}/gu,''):query;
+ let prefix=term.startsWith('*'),suffix=term.endsWith('*'),left=term.startsWith('-'),right=term.endsWith('-');
+ if(prefix||left)term=term.slice(1);if(suffix||right)term=term.slice(0,-1);
+ if(!term.trim())throw Error('Enter letters beside * or - or inside quotation marks.');
+ if(whole&&!(prefix||suffix||left||right)){left=true;right=true}
+ const literal=term.replace(/[.*+?^\x24{}()|[\]\\]/g,'\\async function runConcordance(){');
+ const source=(left?'(?<![\\p{L}\\p{N}\\p{M}])':'')+(prefix?'(?<!\\S)\\S+':suffix?'(?<!\\S)':'')+literal+(suffix?'\\S+(?!\\S)':prefix?'(?!\\S)':'')+(right?'(?![\\p{L}\\p{N}\\p{M}])':'');
+ return {quoted,pattern:new RegExp(source,matchCase?'gu':'giu')};
+}
+function ebookMatches(text,search){
+ let searchable=text,offsets=null;
+ if(search.quoted){searchable='';offsets=[];for(let i=0;i<text.length;){const ch=String.fromCodePoint(text.codePointAt(i));if(!/\p{P}/u.test(ch)){searchable+=ch;for(let j=0;j<ch.length;j++)offsets.push(i+j)}i+=ch.length}}
+ search.pattern.lastIndex=0;const matches=[];
+ for(const m of searchable.matchAll(search.pattern)){const start=offsets?offsets[m.index]:m.index,end=offsets?offsets[m.index+m[0].length-1]+1:m.index+m[0].length;matches.push({start,end})}
+ return matches;
+}
+function ebookMarked(r){let result='',at=0;for(const m of r.matches||[]){if(m.start<at)continue;result+=escapeHtml(r.quote.slice(at,m.start))+'<mark>'+escapeHtml(r.quote.slice(m.start,m.end))+'</mark>';at=m.end}return result+escapeHtml(r.quote.slice(at))}
+
 async function runConcordance(){
  const word=$('findTerm').value.trim();if(!word)return toast('Enter a search word or phrase');
- concordanceTerm=word;concordanceResults=[];let sensitive=$('caseSensitive').checked,whole=$('wholeWords').checked;
- const term=sensitive?word:word.toLocaleLowerCase();let status=$('findStatus');$('runFind').disabled=true;
+ if(word.length>500)return toast('Search for a phrase of 500 characters or fewer');
+ concordanceTerm=word;concordanceResults=[];let sensitive=$('caseSensitive').checked,whole=$('wholeWords').checked;concordanceScope=$('findScope').value;
+ let search;try{search=ebookPattern(word,sensitive,whole)}catch(e){return toast(e.message)}
+ let status=$('findStatus');$('runFind').disabled=true;
  let searched=0, errors=[];const limit=250;
  try{
-  for(const b of state.books){
+  for(const b of state.books.filter(b=>concordanceScope==='all'||b.id===concordanceScope)){
    const bytes=await idbGet('books',b.id);if(!bytes){errors.push(b.title+' (file missing)');continue}
    let zip;try{zip=await JSZip.loadAsync(bytes)}catch(e){errors.push(b.title+' (unreadable)');continue}
    for(let c=0;c<b.spine.length;c++){
@@ -133,12 +156,8 @@ async function runConcordance(){
     let raw;try{raw=await zip.file(b.spine[c])?.async('string')}catch(e){continue}if(!raw)continue;
     searched++;let paras=chapterParagraphs(raw);
     for(let i=0;i<paras.length;i++){
-     let hay=sensitive?paras[i]:paras[i].toLocaleLowerCase(),at=hay.indexOf(term),found=false;
-     while(at!==-1){const before=at===0?'':hay[at-1],after=hay[at+term.length]||'';
-      if(!whole||(!/[\p{L}\p{N}_]/u.test(before)&&!/[\p{L}\p{N}_]/u.test(after))){found=true;break}
-      at=hay.indexOf(term,at+1);
-     }
-     if(found){concordanceResults.push({bookId:b.id,title:b.title,chapter:c,paragraph:i,previous:paras[i-1]||'',quote:paras[i],next:paras[i+1]||''});if(concordanceResults.length>=limit)break}
+     const matches=ebookMatches(paras[i],search);
+     if(matches.length){concordanceResults.push({bookId:b.id,title:b.title,chapter:c,paragraph:i,previous:paras[i-1]||'',quote:paras[i],next:paras[i+1]||'',matches});if(concordanceResults.length>=limit)break}
     }
     if(concordanceResults.length>=limit)break;
    }
@@ -151,7 +170,7 @@ async function runConcordance(){
 function showConcordanceResults(){
  let host=$('findResults');if(!host)return;
  if(!concordanceResults.length){host.innerHTML='<div class="empty">No matching passages found. Try a different word or phrase.</div>';return}
- host.innerHTML=`<div class="line" style="margin:15px 0"><button class="btn" id="selectAllMatches">Select all displayed</button><button class="btn primary" id="saveMatches">Save selected to topic note</button></div>`+concordanceResults.map((r,i)=>`<article class="item"><label class="line"><input type="checkbox" class="matchcheck" value="${i}" checked><b>${escapeHtml(r.title)}</b><span class="muted">Chapter ${r.chapter+1} · Paragraph ${r.paragraph+1}</span></label>${r.previous?`<p class="muted">${escapeHtml(r.previous)}</p>`:''}<div class="quote">${escapeHtml(r.quote)}</div>${r.next?`<p class="muted">${escapeHtml(r.next)}</p>`:''}<button class="btn" data-open-match="${i}">Open source chapter →</button></article>`).join('');
+ host.innerHTML=`<div class="line" style="margin:15px 0"><button class="btn" id="selectAllMatches">Select all displayed</button><button class="btn primary" id="saveMatches">Save selected to topic note</button></div>`+concordanceResults.map((r,i)=>`<article class="item"><label class="line"><input type="checkbox" class="matchcheck" value="${i}" checked><b>${escapeHtml(r.title)}</b><span class="muted">Chapter ${r.chapter+1} · Paragraph ${r.paragraph+1}</span></label>${r.previous?`<p class="muted">${escapeHtml(r.previous)}</p>`:''}<div class="quote">${ebookMarked(r)}</div>${r.next?`<p class="muted">${escapeHtml(r.next)}</p>`:''}<button class="btn" data-open-match="${i}">Open source chapter →</button></article>`).join('');
  $('selectAllMatches').onclick=()=>{let checks=[...document.querySelectorAll('.matchcheck')],all=checks.every(x=>x.checked);checks.forEach(x=>x.checked=!all)};
  $('saveMatches').onclick=saveConcordance;
  document.querySelectorAll('[data-open-match]').forEach(el=>el.onclick=()=>{let r=concordanceResults[+el.dataset.openMatch];openBook(r.bookId,r.chapter)});
