@@ -431,7 +431,17 @@ async function importEpub(f){if(!f)return;try{toast('Importing EPUB...');let byt
 function download(name,data,type){let blob=data instanceof Blob?data:new Blob([data],{type:type||'application/octet-stream'}),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),5000)}
 function bytesToBase64(buffer){let b=new Uint8Array(buffer),out='';const chunk=16384;for(let i=0;i<b.length;i+=chunk)out+=String.fromCharCode(...b.subarray(i,i+chunk));return btoa(out)}
 function base64ToBytes(s){let raw=atob(s),a=new Uint8Array(raw.length);for(let i=0;i<a.length;i++)a[i]=raw.charCodeAt(i);return a.buffer}
-async function backup(){toast('Preparing portable backup...');let files={};for(const b of state.books){let bytes=await idbGet('books',b.id);if(bytes)files[b.id]=bytesToBase64(bytes)}download('cosmere-archives-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify({format:'threadmark-workspace',version:1,exported:new Date().toISOString(),state,files}),'application/json');toast('Full backup exported')}
+async function backup(){
+ try{
+  await saveQueue;
+  toast('Preparing portable backup...');
+  const files={},missing=[];
+  for(const b of state.books){const bytes=await idbGet('books',b.id);if(bytes)files[b.id]=bytesToBase64(bytes);else missing.push(b.title||b.id)}
+  if(missing.length)throw Error('EPUB files missing for '+missing.join(', ')+'. Backup cancelled to avoid incomplete archive.');
+  download('research-archives-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify({format:'threadmark-workspace',version:2,exported:new Date().toISOString(),state:structuredClone(state),files}),'application/json');
+  toast('Complete workspace backup exported');
+ }catch(e){console.error('Backup failed:',e);alert('Backup failed: '+e.message)}
+}
 function validateWorkspaceBackup(data){
  if(!data||data.format!=='threadmark-workspace'||!data.state||!data.files||typeof data.files!=='object'||Array.isArray(data.files))throw Error('Not a Research Archives workspace backup');
  const st=data.state;
@@ -450,6 +460,8 @@ async function restore(f){
   await saveQueue;
   // Preserve the complete current metadata before any incoming book writes.
   await idbPut('state','pre-restore',structuredClone(state));
+  // Preserve old EPUB bytes separately, even when incoming IDs are identical.
+  for(const b of state.books){const bytes=await idbGet('books',b.id);if(bytes)await idbPut('books','pre-restore:'+b.id,bytes)}
   for(const b of validated.books)await idbPut('books',b.id,b.bytes);
   await idbPut('state','main',validated.state);
   state=validated.state;ensurePapers();toast('Workspace restored; previous research metadata saved for recovery');navigate('library')
@@ -458,8 +470,10 @@ async function restore(f){
 async function recoverPreRestore(){
  const old=await idbGet('state','pre-restore');
  if(!old)return toast('No pre-restore research snapshot found');
- if(!confirm('Recover your pre-restore research metadata? This restores notes, collections, documents and references. EPUB files already in this app are preserved.'))return;
- await saveQueue;const current=structuredClone(state);await idbPut('state','main',old);
+ if(!confirm('Recover your pre-restore research metadata? This restores the earlier research and available EPUB files. Your current research will become the new recovery snapshot.'))return;
+ await saveQueue;const current=structuredClone(state);
+ for(const b of old.books||[]){const bytes=await idbGet('books','pre-restore:'+b.id);if(bytes)await idbPut('books',b.id,bytes)}
+ await idbPut('state','main',old);
  await idbPut('state','pre-restore',current);state=old;ensurePapers();navigate('library');toast('Previous research metadata recovered');
 }
 
