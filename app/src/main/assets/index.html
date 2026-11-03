@@ -472,7 +472,11 @@ async function recoverPreRestore(){
  if(!old)return toast('No pre-restore research snapshot found');
  if(!confirm('Recover your pre-restore research metadata? This restores the earlier research and available EPUB files. Your current research will become the new recovery snapshot.'))return;
  await saveQueue;const current=structuredClone(state);
+ // Swap original and current EPUB snapshots so recovery is reversible.
+ const currentBooks=new Map();
+ for(const b of current.books||[]){const bytes=await idbGet('books',b.id);if(bytes)currentBooks.set(b.id,bytes)}
  for(const b of old.books||[]){const bytes=await idbGet('books','pre-restore:'+b.id);if(bytes)await idbPut('books',b.id,bytes)}
+ for(const [id,bytes] of currentBooks)await idbPut('books','pre-restore:'+id,bytes);
  await idbPut('state','main',old);
  await idbPut('state','pre-restore',current);state=old;ensurePapers();navigate('library');toast('Previous research metadata recovered');
 }
